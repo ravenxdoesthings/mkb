@@ -1,50 +1,13 @@
-use axum::{
-    Router,
-    extract::{Query, State},
-    http::StatusCode,
-    response::{Html, IntoResponse},
-    routing::get,
-};
-use axum_extra::extract::{CookieJar, cookie::Cookie};
+use axum::{Router, routing::get};
 use diesel::{PgConnection, r2d2::ConnectionManager};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use r2d2::Pool;
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use mkb::esi::{self, Token, processor::Job};
-use mkb::models::User;
-
-#[derive(Clone)]
-struct UserStore {
-    users: Arc<RwLock<HashMap<i64, User>>>,
-}
-
-impl UserStore {
-    fn new() -> Self {
-        Self {
-            users: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct AppState {
-    user_store: UserStore,
-    client: esi::EsiClient,
-}
-
-impl AppState {
-    fn new(store: UserStore, client: &esi::EsiClient) -> Self {
-        Self {
-            user_store: store,
-            client: client.clone(),
-        }
-    }
-}
+use mkb::{
+    esi::{self, processor::Job},
+    http::{handlers, state::AppState},
+};
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("./migrations");
 
@@ -76,9 +39,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let processor = esi::processor::Processor::new(pool, &client);
     let _ = processor.start(jobs_receiver).await;
 
-    let user_store = UserStore::new();
-
-    let state = AppState::new(user_store, &client);
+    let state = AppState::new(jobs_sender.clone(), &client);
 
     let refresh_send = jobs_sender.clone();
     tokio::spawn(async move {
@@ -117,9 +78,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Build a simple Axum app
     let app = Router::new()
-        .route("/", get(index))
-        .route("/auth", get(auth))
-        .route("/auth/callback", get(callback))
+        .route("/", get(handlers::index))
+        .route("/auth", get(handlers::auth))
+        .route("/auth/callback", get(handlers::callback))
         .with_state(state);
 
     // run our app with hyper, listening globally on port 3000
@@ -129,77 +90,4 @@ async fn main() -> Result<(), anyhow::Error> {
     jobs_sender.send(Job::Stop).await?;
 
     Ok(())
-}
-
-async fn index() -> impl IntoResponse {
-    (StatusCode::OK, "Hello, World!")
-}
-
-async fn auth(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
-    let (url, nonce) = state.client.build_auth_url();
-
-    (
-        StatusCode::OK,
-        jar.add(Cookie::build(("mkb_state", nonce.clone())).path("/")),
-        Html(format!(
-            r#"<a href="{url}">Authenticate with EVE Online</a>"#
-        )),
-    )
-}
-
-async fn callback(
-    State(state): State<AppState>,
-    Query(params): Query<HashMap<String, String>>,
-    jar: CookieJar,
-) -> impl IntoResponse {
-    tracing::debug!(params = format!("{params:?}"));
-
-    let nonce = match jar.get("mkb_state") {
-        Some(cookie) => cookie.value().to_string(),
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                [("Content-Type", "text/plain")],
-                "Missing state cookie".to_string(),
-            );
-        }
-    };
-
-    if params.get("state") != Some(&nonce) {
-        return (
-            StatusCode::BAD_REQUEST,
-            [("Content-Type", "text/html")],
-            "Invalid state".to_string(),
-        );
-    }
-
-    let code = params.get("code").unwrap_or(&String::new()).to_owned();
-
-    let _ = state
-        .client
-        .clone()
-        .token_exchange(Token::AuthCode(code))
-        .await
-        .map_err(|e| {
-            tracing::error!(error = e.to_string(), "Failed to exchange token");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [("Content-Type", "text/html")],
-                e.to_string(),
-            )
-        })
-        .map(|user| {
-            state
-                .user_store
-                .users
-                .write()
-                .unwrap()
-                .insert(user.character_id, user);
-        });
-
-    (
-        StatusCode::OK,
-        [("Content-Type", "application/json")],
-        "".to_string(),
-    )
 }

@@ -4,6 +4,7 @@ use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
 
 use crate::esi::EsiClient;
+use crate::models::User;
 
 pub enum Job {
     Refresh,
@@ -12,6 +13,7 @@ pub enum Job {
     Character(i64),
     Corporation(i64),
     Alliance(i64),
+    Save(User),
     Stop,
 }
 
@@ -59,6 +61,11 @@ impl Processor {
                     Job::Alliance(alliance_id) => {
                         tracing::info!(alliance_id, "resolving alliance ID");
                         // Fetch and store alliance data
+                    }
+                    Job::Save(user) => {
+                        tracing::info!(character_id = user.character_id, "saving user");
+                        // Save or update the user in the database
+                        let _ = user;
                     }
                     Job::Stop => {
                         tracing::info!("Stopping processor.");
