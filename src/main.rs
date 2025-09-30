@@ -34,7 +34,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let mut conn = pool.get()?;
     conn.run_pending_migrations(MIGRATIONS)
-        .map_err(|e| anyhow::format_err!("failed to apply migrations: {}", e.to_string()))?;
+        .map_err(|e| anyhow::format_err!("failed to apply migrations: {e}"))?;
 
     let processor = esi::processor::Processor::new(pool, &client);
     let _ = processor.start(jobs_receiver).await;
