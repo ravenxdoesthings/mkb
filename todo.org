@@ -1,0 +1,5 @@
+- Create database schema and migrations
+- Refactor to write users into Postgres
+- Implement fetching and saving killmails
+- Implement fetching and saving entities
+- Add UI for displaying killmails and entities
