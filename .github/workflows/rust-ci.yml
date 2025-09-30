@@ -1,0 +1,27 @@
+name: Rust CI
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: actions/setup-rust@v1
+        with:
+          rust-version: stable
+
+      - name: Cargo Check
+        run: cargo check
+
+      - name: Cargo Clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Cargo Test
+        run: cargo test
