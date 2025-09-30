@@ -275,13 +275,8 @@ impl EsiClient {
         &self,
         users: HashMap<i64, User>,
     ) -> Result<HashMap<i64, User>, anyhow::Error> {
-        if users.is_empty() {
-            tracing::info!("no users to refresh");
-            return Ok(HashMap::new());
-        }
-
         let users_to_refresh: Vec<User> = {
-            tracing::info!(users = format!("{:?}", users), "refreshing characters");
+            tracing::info!(len = users.len(), "refreshing characters");
             users.values().cloned().collect()
         };
 

@@ -116,7 +116,6 @@ async fn main() {
     let resolve_send = jobs_sender.clone();
     tokio::spawn(async move {
         loop {
-            tracing::info!("hello");
             let tx = resolve_send.clone();
 
             // just to not mark them unused for now

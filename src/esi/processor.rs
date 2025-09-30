@@ -45,27 +45,27 @@ impl Processor {
                         // Here you would typically refresh tokens for all users in the database
                     }
                     Job::Killmails => {
-                        println!("Processing killmails job");
+                        tracing::info!("Processing killmails job");
                         // Here you would typically fetch new killmails from ESI and enqueue them for processing
                     }
                     Job::Killmail(killmail_id, killmail_hash) => {
-                        println!("Processing killmail: {} {}", killmail_id, killmail_hash);
+                        tracing::info!(killmail_id, killmail_hash, "processing killmail");
                         // Here you would typically fetch the killmail data from ESI and store it in the database
                     }
                     Job::Character(character_id) => {
-                        println!("Processing character: {}", character_id);
+                        tracing::info!(character_id, "resolving character ID");
                         // Fetch and store character data
                     }
                     Job::Corporation(corporation_id) => {
-                        println!("Processing corporation: {}", corporation_id);
+                        tracing::info!(corporation_id, "resolving corporation ID");
                         // Fetch and store corporation data
                     }
                     Job::Alliance(alliance_id) => {
-                        println!("Processing alliance: {}", alliance_id);
+                        tracing::info!(alliance_id, "resolving alliance ID");
                         // Fetch and store alliance data
                     }
                     Job::Stop => {
-                        println!("Stopping processor.");
+                        tracing::info!("Stopping processor.");
                         break;
                     }
                 }
