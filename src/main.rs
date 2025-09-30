@@ -73,6 +73,8 @@ impl AppState {
 
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
+
     // Set up tracing subscriber to log to stdout
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(

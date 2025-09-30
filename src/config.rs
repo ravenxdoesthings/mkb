@@ -16,8 +16,8 @@ impl Config {
             .expect("MKB_ESI_APPLICATION_SECRET environment variable not set");
         let redirect_uri = std::env::var("MKB_ESI_REDIRECT_URI")
             .expect("MKB_ESI_REDIRECT_URI environment variable not set");
-        let database_uri = std::env::var("MKB_DATABASE_URI")
-            .expect("MKB_DATABASE_URI environment variable not set");
+        let database_uri =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL environment variable not set");
 
         Self {
             application_id,
