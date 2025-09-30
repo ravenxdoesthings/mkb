@@ -1,8 +1,3 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
-
 use axum::{
     Router,
     extract::{Query, State},
@@ -11,6 +6,13 @@ use axum::{
     routing::get,
 };
 use axum_extra::extract::{CookieJar, cookie::Cookie};
+use diesel::{PgConnection, r2d2::ConnectionManager};
+use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
+use r2d2::Pool;
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use mkb::esi::{self, Token, processor::Job};
@@ -44,10 +46,11 @@ impl AppState {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    dotenvy::dotenv().ok();
+pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("./migrations");
 
+#[tokio::main]
+async fn main() -> Result<(), anyhow::Error> {
+    dotenvy::dotenv().ok();
     // Set up tracing subscriber to log to stdout
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
@@ -57,11 +60,20 @@ async fn main() {
         .init();
 
     let config = mkb::config::Config::from_env();
+
+    let manager = ConnectionManager::<PgConnection>::new(config.database_uri.clone());
+    let pool = Pool::builder()
+        .build(manager)
+        .expect("Failed to create pool.");
     let client = esi::EsiClient::from_config(config.clone());
 
     let (jobs_sender, jobs_receiver) = tokio::sync::mpsc::channel(100);
 
-    let processor = esi::processor::Processor::new(&config.database_uri, &client);
+    let mut conn = pool.get()?;
+    conn.run_pending_migrations(MIGRATIONS)
+        .map_err(|e| anyhow::format_err!("failed to apply migrations: {}", e.to_string()))?;
+
+    let processor = esi::processor::Processor::new(pool, &client);
     let _ = processor.start(jobs_receiver).await;
 
     let user_store = UserStore::new();
@@ -111,10 +123,12 @@ async fn main() {
         .with_state(state);
 
     // run our app with hyper, listening globally on port 3000
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    axum::serve(listener, app).await?;
 
-    jobs_sender.send(Job::Stop).await.unwrap();
+    jobs_sender.send(Job::Stop).await?;
+
+    Ok(())
 }
 
 async fn index() -> impl IntoResponse {

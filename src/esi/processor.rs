@@ -21,11 +21,7 @@ pub struct Processor {
 }
 
 impl Processor {
-    pub fn new(database_url: &str, client: &EsiClient) -> Self {
-        let manager = ConnectionManager::<PgConnection>::new(database_url);
-        let pool = Pool::builder()
-            .build(manager)
-            .expect("Failed to create pool.");
+    pub fn new(pool: Pool<ConnectionManager<PgConnection>>, client: &EsiClient) -> Self {
         Processor {
             pool,
             client: client.clone(),
