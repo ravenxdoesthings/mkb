@@ -13,35 +13,8 @@ use axum::{
 use axum_extra::extract::{CookieJar, cookie::Cookie};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::esi::{Claims, Token, processor::Job};
-
-mod config;
-mod esi;
-
-#[derive(Clone, Debug)]
-struct User {
-    character_id: i64,
-    access_token: String,
-    refresh_token: String,
-    expires_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl User {
-    fn new(access_token: String, refresh_token: String, claims: Claims) -> Self {
-        let character_id: i64 = claims
-            .sub
-            .replace("CHARACTER:EVE:", "")
-            .parse()
-            .unwrap_or(0);
-
-        Self {
-            character_id,
-            access_token,
-            refresh_token,
-            expires_at: chrono::DateTime::from_timestamp(claims.exp, 0).unwrap_or_default(),
-        }
-    }
-}
+use mkb::esi::{self, Token, processor::Job};
+use mkb::models::User;
 
 #[derive(Clone)]
 struct UserStore {
@@ -83,7 +56,7 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let config = config::Config::from_env();
+    let config = mkb::config::Config::from_env();
     let client = esi::EsiClient::from_config(config.clone());
 
     let (jobs_sender, jobs_receiver) = tokio::sync::mpsc::channel(100);

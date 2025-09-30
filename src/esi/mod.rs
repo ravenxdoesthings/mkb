@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use crate::{User, config::Config};
+use crate::config::Config;
+use crate::models::User;
 use base64::Engine;
 use jsonwebtoken::{Algorithm, DecodingKey, TokenData, Validation, decode, jwk::Jwk};
 use reqwest::Response;
