@@ -73,23 +73,25 @@ impl AppState {
 
 #[tokio::main]
 async fn main() {
+    // Set up tracing subscriber to log to stdout
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::new(
+            "debug,hyper=off,reqwest=off",
+        ))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
     let config = config::Config::from_env();
     let client = esi::EsiClient::from_config(config.clone());
 
     let (jobs_sender, jobs_receiver) = tokio::sync::mpsc::channel(100);
 
     let processor = esi::processor::Processor::new(&config.database_uri, &client);
-    processor.start(jobs_receiver);
+    let _ = processor.start(jobs_receiver).await;
 
     let user_store = UserStore::new();
 
     let state = AppState::new(user_store, &client);
-
-    // Set up tracing subscriber to log to stdout
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new("info"))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
 
     let refresh_send = jobs_sender.clone();
     tokio::spawn(async move {
@@ -114,6 +116,7 @@ async fn main() {
     let resolve_send = jobs_sender.clone();
     tokio::spawn(async move {
         loop {
+            tracing::info!("hello");
             let tx = resolve_send.clone();
 
             // just to not mark them unused for now

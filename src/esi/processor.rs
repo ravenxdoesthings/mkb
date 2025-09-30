@@ -32,7 +32,7 @@ impl Processor {
         }
     }
 
-    pub fn start(&self, mut jobs_rx: tokio::sync::mpsc::Receiver<Job>) {
+    pub async fn start(&self, mut jobs_rx: tokio::sync::mpsc::Receiver<Job>) {
         let _pool = self.pool.clone();
         let client = self.client.clone();
         tokio::spawn(async move {
