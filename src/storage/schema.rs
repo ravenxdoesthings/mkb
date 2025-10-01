@@ -20,7 +20,7 @@ diesel::table! {
 diesel::table! {
     killmails_x_entities (id) {
         id -> Uuid,
-        killmail_id -> Uuid,
+        killmail_id -> Int8,
         entity_id -> Int8,
         entity_side -> Text,
     }
@@ -38,5 +38,8 @@ diesel::table! {
         last_fetched -> Nullable<Timestamptz>,
     }
 }
+
+diesel::joinable!(killmails_x_entities -> entities (entity_id));
+diesel::joinable!(killmails_x_entities -> killmails (killmail_id));
 
 diesel::allow_tables_to_appear_in_same_query!(entities, killmails, killmails_x_entities, users,);

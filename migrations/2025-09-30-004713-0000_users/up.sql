@@ -6,5 +6,6 @@ CREATE TABLE users (
 	refresh_token TEXT NOT NULL,
 	expires_at TIMESTAMPTZ NOT NULL,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	last_fetched TIMESTAMPTZ
 );

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::config::Config;
-use crate::models::User;
+use crate::storage::models;
 use base64::Engine;
 use jsonwebtoken::{Algorithm, DecodingKey, TokenData, Validation, decode, jwk::Jwk};
 use reqwest::Response;
@@ -24,22 +24,22 @@ pub struct EsiClient {
     app_id: String,
     app_secret: String,
     redirect_uri: String,
+    jobs_sender: tokio::sync::mpsc::Sender<processor::Job>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 struct KillmailItem {
-    #[serde(rename = "killmail_hash")]
-    _killmail_hash: String,
-    #[serde(rename = "killmail_id")]
-    _killmail_id: i64,
+    killmail_hash: String,
+    killmail_id: i64,
 }
 
 impl EsiClient {
-    pub fn from_config(config: Config) -> Self {
+    pub fn from_config(sender: &tokio::sync::mpsc::Sender<processor::Job>, config: Config) -> Self {
         Self {
             app_id: config.application_id,
             app_secret: config.application_secret,
             redirect_uri: config.redirect_uri,
+            jobs_sender: sender.clone(),
         }
     }
 }
@@ -74,7 +74,7 @@ impl EsiClient {
         (url, nonce)
     }
 
-    pub async fn token_exchange(&self, token: Token) -> Result<User, anyhow::Error> {
+    pub async fn token_exchange(&self, token: Token) -> Result<models::User, anyhow::Error> {
         let basic_auth = self.build_basic_auth();
         let payload = self.build_payload(token);
 
@@ -110,8 +110,8 @@ impl EsiClient {
 
         match self.validate_jwt(&access_token).await {
             Ok(claims) => {
-                let user = User::new(access_token, refresh_token, claims);
-                tracing::debug!(
+                let user = models::User::new(access_token, refresh_token, claims);
+                tracing::trace!(
                     user.access_token,
                     user.refresh_token,
                     expires_at = format!("{}", user.expires_at),
@@ -142,7 +142,7 @@ impl EsiClient {
     }
 
     pub async fn validate_jwt(&self, token: &String) -> Result<Claims, anyhow::Error> {
-        tracing::debug!(token, "attempting to validate token");
+        tracing::trace!(token, "attempting to validate token");
         let decoding_key = Self::get_rsa256_key().await.unwrap();
         let mut validations = Validation::new(Algorithm::RS256);
         validations.required_spec_claims = vec![String::from("sub")].into_iter().collect();
@@ -189,19 +189,32 @@ impl EsiClient {
         }
     }
 
-    pub async fn _get_personal_killmails(&self, user: &User) -> Result<(), anyhow::Error> {
-        tracing::info!(
+    async fn get_personal_killmails(&self, user: &models::User) -> Result<(), anyhow::Error> {
+        tracing::debug!(
             id = user.character_id,
-            access_token = user.access_token,
+            last_fetched = user
+                .last_fetched
+                .map_or("".to_string(), |dt| dt.to_rfc3339()),
             "fetching user killmails"
         );
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            format!("Bearer {}", user.access_token).as_str().parse()?,
+        );
+        if let Some(last_fetched) = user.last_fetched {
+            let last_modified = last_fetched.to_rfc2822();
+            headers.insert("If-Modified-Since", last_modified.parse()?);
+        }
+
         let client = reqwest::Client::new();
         let response = client
             .get(format!(
                 "https://esi.evetech.net/latest/characters/{}/killmails/recent/",
                 user.character_id
             ))
-            .header("Authorization", format!("Bearer {}", user.access_token))
+            .headers(headers)
             .send()
             .await?;
 
@@ -214,13 +227,32 @@ impl EsiClient {
                 text
             ));
         }
-        let _: Vec<KillmailItem> = serde_json::from_str(&text)?;
-        // let mut km = Killmails::new();
+        let killmails: Vec<KillmailItem> = serde_json::from_str(&text)?;
+
+        for km in killmails {
+            let killmail = models::Killmail {
+                killmail_id: km.killmail_id,
+                killmail_hash: km.killmail_hash,
+                status: "new".to_string(),
+            };
+
+            if let Err(err) = self
+                .jobs_sender
+                .send(processor::Job::SaveKillmail(killmail))
+                .await
+            {
+                tracing::error!(
+                    character_id = user.character_id,
+                    error = err.to_string(),
+                    "failed to enqueue save job"
+                );
+            }
+        }
 
         Ok(())
     }
 
-    pub async fn _get_character_info(&self, user: &User) -> Result<(), anyhow::Error> {
+    pub async fn _get_character_info(&self, user: &models::User) -> Result<(), anyhow::Error> {
         let response = match reqwest::Client::new()
             .get(format!(
                 "https://esi.evetech.net/characters/{}",
@@ -272,28 +304,30 @@ impl EsiClient {
         Ok(json)
     }
 
-    pub async fn refresh(
-        &self,
-        users: HashMap<i64, User>,
-    ) -> Result<HashMap<i64, User>, anyhow::Error> {
-        let users_to_refresh: Vec<User> = {
-            tracing::info!(len = users.len(), "refreshing characters");
-            users.values().cloned().collect()
-        };
-
-        let mut refreshed_users = HashMap::new();
-
-        for user in users_to_refresh {
+    pub async fn refresh(&self, users: Vec<models::User>) {
+        tracing::debug!(len = users.len(), "refreshing characters");
+        for user in users {
             let token = Token::RefreshToken(user.refresh_token.clone());
 
             match self.token_exchange(token).await {
                 Ok(new_user) => {
-                    tracing::info!(
+                    tracing::debug!(
                         character_id = user.character_id,
                         "refreshed token, new expiry at {}",
                         new_user.expires_at
                     );
-                    refreshed_users.insert(new_user.character_id, new_user);
+
+                    if let Err(err) = self
+                        .jobs_sender
+                        .send(processor::Job::SaveCharacter(new_user))
+                        .await
+                    {
+                        tracing::error!(
+                            character_id = user.character_id,
+                            error = err.to_string(),
+                            "failed to enqueue save job"
+                        );
+                    }
                 }
                 Err(e) => {
                     tracing::error!(
@@ -304,7 +338,53 @@ impl EsiClient {
                 }
             }
         }
+    }
 
-        Ok(refreshed_users)
+    pub async fn get_killmails(&self, users: Vec<models::User>) {
+        tracing::debug!(len = users.len(), "fetching killmails for users");
+        for user in users {
+            if let Err(e) = self.get_personal_killmails(&user).await {
+                tracing::error!(
+                    error = e.to_string(),
+                    "Failed fetch killmails for character"
+                );
+            }
+        }
+    }
+
+    //  pub async fn get_killmail_data(&self, killmail_id: i64, killmail_hash: String) {
+    //      let url = format!("https://esi.evetech.net/killmails/{killmail_id}/{killmail_hash}");
+    //      let response = match reqwest::Client::new().get(url).send().await {
+    //          Ok(resp) => resp,
+    //          Err(e) => {
+    //              tracing::error!(error = e.to_string(), "failed to send request");
+    //              return;
+    //          }
+    //      };
+
+    //      let status = response.status();
+    //      if !status.is_success() {
+    //          tracing::error!(status = status.as_u16(), "request failed");
+    //          return;
+    //      }
+
+    //      let result = match Self::json(response).await {
+    //      	Ok(json) => json,
+    // Err(e) => {
+    // 	tracing::error!(error = e.to_string(), "failed to decode JSON");
+    // 	return;
+    // }
+    //      };
+
+    //  }
+}
+
+#[cfg(test)]
+mod test {
+    #[tokio::test]
+    async fn test_parse_last_modified_value() {
+        let last_modified = "Tue, 30 Sep 2025 22:55:17 GMT".to_string();
+        let parsed = chrono::DateTime::parse_from_rfc2822(&last_modified).unwrap();
+        println!("{}", parsed.to_utc().to_rfc3339());
     }
 }

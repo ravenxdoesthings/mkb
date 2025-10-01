@@ -31,8 +31,6 @@ pub async fn callback(
     Query(params): Query<HashMap<String, String>>,
     jar: CookieJar,
 ) -> impl IntoResponse {
-    tracing::debug!(params = format!("{params:?}"));
-
     let nonce = match jar.get("mkb_state") {
         Some(cookie) => cookie.value().to_string(),
         None => {
@@ -70,7 +68,7 @@ pub async fn callback(
         .map(|user| {
             if state
                 .jobs_sender
-                .try_send(esi::processor::Job::Save(user.clone()))
+                .try_send(esi::processor::Job::SaveCharacter(user.clone()))
                 .is_err()
             {
                 tracing::error!(
@@ -79,6 +77,48 @@ pub async fn callback(
                 );
             }
         });
+
+    (
+        StatusCode::OK,
+        [("Content-Type", "application/json")],
+        "".to_string(),
+    )
+}
+
+pub async fn refresh(State(state): State<AppState>) -> impl IntoResponse {
+    state
+        .jobs_sender
+        .try_send(esi::processor::Job::Refresh)
+        .map_err(|e| {
+            tracing::error!(error = e.to_string(), "Failed to enqueue refresh job");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Content-Type", "text/html")],
+                e.to_string(),
+            )
+        })
+        .ok();
+
+    (
+        StatusCode::OK,
+        [("Content-Type", "application/json")],
+        "".to_string(),
+    )
+}
+
+pub async fn killmails(State(state): State<AppState>) -> impl IntoResponse {
+    state
+        .jobs_sender
+        .try_send(esi::processor::Job::Killmails)
+        .map_err(|e| {
+            tracing::error!(error = e.to_string(), "Failed to enqueue refresh job");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Content-Type", "text/html")],
+                e.to_string(),
+            )
+        })
+        .ok();
 
     (
         StatusCode::OK,

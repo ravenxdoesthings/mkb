@@ -1,10 +1,13 @@
-use std::collections::HashMap;
-
+use diesel::dsl::{IntervalDsl, now};
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ConnectionManager, Pool};
+use diesel::sql_types::Timestamptz;
+use diesel::{ExpressionMethods, IntoSql, QueryDsl, RunQueryDsl};
 
 use crate::esi::EsiClient;
-use crate::models::User;
+use crate::storage::handlers::{save_killmail, save_user};
+use crate::storage::schema::users::expires_at;
+use crate::storage::{models, schema};
 
 pub enum Job {
     Refresh,
@@ -13,7 +16,8 @@ pub enum Job {
     Character(i64),
     Corporation(i64),
     Alliance(i64),
-    Save(User),
+    SaveCharacter(models::User),
+    SaveKillmail(models::Killmail),
     Stop,
 }
 
@@ -31,20 +35,38 @@ impl Processor {
     }
 
     pub async fn start(&self, mut jobs_rx: tokio::sync::mpsc::Receiver<Job>) {
-        let _pool = self.pool.clone();
+        let pool = self.pool.clone();
         let client = self.client.clone();
         tokio::spawn(async move {
             while let Some(job) = jobs_rx.recv().await {
                 match job {
                     Job::Refresh => {
-                        // get users to refresh then call refresh method
-                        let users = HashMap::new();
-                        let _ = client.refresh(users).await;
-                        // Here you would typically refresh tokens for all users in the database
+                        let mut conn = pool.get().unwrap();
+                        let users = match schema::users::dsl::users
+                            .filter(expires_at.gt(now.into_sql::<Timestamptz>() - 20.minutes()))
+                            .load::<models::User>(&mut conn)
+                        {
+                            Ok(users) => users,
+                            Err(e) => {
+                                tracing::error!(error = e.to_string(), "Failed to refresh users");
+                                continue;
+                            }
+                        };
+
+                        client.refresh(users).await;
                     }
                     Job::Killmails => {
-                        tracing::info!("Processing killmails job");
-                        // Here you would typically fetch new killmails from ESI and enqueue them for processing
+                        let mut conn = pool.get().unwrap();
+                        let users = match schema::users::dsl::users.load::<models::User>(&mut conn)
+                        {
+                            Ok(users) => users,
+                            Err(e) => {
+                                tracing::error!(error = e.to_string(), "Failed to refresh users");
+                                continue;
+                            }
+                        };
+
+                        client.get_killmails(users).await;
                     }
                     Job::Killmail(killmail_id, killmail_hash) => {
                         tracing::info!(killmail_id, killmail_hash, "processing killmail");
@@ -62,10 +84,22 @@ impl Processor {
                         tracing::info!(alliance_id, "resolving alliance ID");
                         // Fetch and store alliance data
                     }
-                    Job::Save(user) => {
-                        tracing::info!(character_id = user.character_id, "saving user");
+                    Job::SaveCharacter(user) => {
+                        tracing::debug!(character_id = user.character_id, "saving user");
                         // Save or update the user in the database
-                        let _ = user;
+                        if let Err(e) = save_user(&pool, user) {
+                            tracing::error!(error = e.to_string(), "Failed to save user");
+                        };
+                    }
+                    Job::SaveKillmail(killmail) => {
+                        tracing::debug!(
+                            killmail_id = killmail.killmail_id,
+                            killmail_hash = killmail.killmail_hash,
+                            "saving killmail"
+                        );
+                        if let Err(e) = save_killmail(&pool, killmail) {
+                            tracing::error!(error = e.to_string(), "Failed to save killmail");
+                        }
                     }
                     Job::Stop => {
                         tracing::info!("Stopping processor.");

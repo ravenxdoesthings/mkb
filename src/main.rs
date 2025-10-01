@@ -28,9 +28,10 @@ async fn main() -> Result<(), anyhow::Error> {
     let pool = Pool::builder()
         .build(manager)
         .expect("Failed to create pool.");
-    let client = esi::EsiClient::from_config(config.clone());
 
     let (jobs_sender, jobs_receiver) = tokio::sync::mpsc::channel(100);
+
+    let client = esi::EsiClient::from_config(&jobs_sender, config.clone());
 
     let mut conn = pool.get()?;
     conn.run_pending_migrations(MIGRATIONS)
@@ -53,6 +54,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let fetch_send = jobs_sender.clone();
     tokio::spawn(async move {
+        let _ = tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         loop {
             let tx = fetch_send.clone();
             let _ = tx.send(Job::Killmails).await;
@@ -63,6 +65,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let resolve_send = jobs_sender.clone();
     tokio::spawn(async move {
+        let _ = tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         loop {
             let tx = resolve_send.clone();
 
@@ -81,7 +84,10 @@ async fn main() -> Result<(), anyhow::Error> {
         .route("/", get(handlers::index))
         .route("/auth", get(handlers::auth))
         .route("/auth/callback", get(handlers::callback))
+        .route("/testing/refresh", get(handlers::refresh))
         .with_state(state);
+
+    tracing::info!("starting server... http://localhost:3000/auth");
 
     // run our app with hyper, listening globally on port 3000
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
