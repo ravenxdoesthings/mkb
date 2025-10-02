@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::{Router, routing::get};
 use diesel::{PgConnection, r2d2::ConnectionManager};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
@@ -29,7 +31,7 @@ async fn main() -> Result<(), anyhow::Error> {
         .build(manager)
         .expect("Failed to create pool.");
 
-    let (jobs_sender, jobs_receiver) = tokio::sync::mpsc::channel(100);
+    let (jobs_sender, jobs_receiver) = tokio::sync::mpsc::channel(10000);
 
     let client = esi::EsiClient::from_config(&jobs_sender, config.clone());
 
@@ -42,42 +44,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
     let state = AppState::new(jobs_sender.clone(), &client);
 
-    let refresh_send = jobs_sender.clone();
-    tokio::spawn(async move {
-        loop {
-            let tx = refresh_send.clone();
-            let _ = tx.send(Job::Refresh).await;
-
-            let _ = tokio::time::sleep(std::time::Duration::from_secs(60 * 5)).await;
-        }
-    });
-
-    let fetch_send = jobs_sender.clone();
-    tokio::spawn(async move {
-        let _ = tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        loop {
-            let tx = fetch_send.clone();
-            let _ = tx.send(Job::Killmails).await;
-
-            let _ = tokio::time::sleep(std::time::Duration::from_secs(60 * 10)).await;
-        }
-    });
-
-    let resolve_send = jobs_sender.clone();
-    tokio::spawn(async move {
-        let _ = tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        loop {
-            let tx = resolve_send.clone();
-
-            // just to not mark them unused for now
-            let _ = tx.send(Job::Killmail(1, "test".into())).await;
-            let _ = tx.send(Job::Character(1)).await;
-            let _ = tx.send(Job::Corporation(1)).await;
-            let _ = tx.send(Job::Alliance(1)).await;
-
-            let _ = tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
-        }
-    });
+    let (scheduler_stop_tx, scheduler_stop_rx) = tokio::sync::oneshot::channel();
+    let scheduler_handle =
+        mkb::esi::scheduler::start_scheduler(scheduler_stop_rx, jobs_sender.clone()).await;
 
     // Build a simple Axum app
     let app = Router::new()
@@ -85,6 +54,8 @@ async fn main() -> Result<(), anyhow::Error> {
         .route("/auth", get(handlers::auth))
         .route("/auth/callback", get(handlers::callback))
         .route("/testing/refresh", get(handlers::refresh))
+        .route("/testing/killmails", get(handlers::killmails))
+        .route("/testing/resolve", get(handlers::resolve))
         .with_state(state);
 
     tracing::info!("starting server... http://localhost:3000/auth");
@@ -94,6 +65,13 @@ async fn main() -> Result<(), anyhow::Error> {
     axum::serve(listener, app).await?;
 
     jobs_sender.send(Job::Stop).await?;
+
+    let _ = scheduler_stop_tx.send(());
+    tokio::time::interval(Duration::from_secs(3)).tick().await;
+    if !scheduler_handle.is_finished() {
+        scheduler_handle.abort();
+        let _ = scheduler_handle.await;
+    }
 
     Ok(())
 }

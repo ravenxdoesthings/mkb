@@ -6,18 +6,21 @@ use diesel::{ExpressionMethods, IntoSql, QueryDsl, RunQueryDsl};
 
 use crate::esi::EsiClient;
 use crate::storage::handlers::{save_killmail, save_user};
+use crate::storage::schema::killmails::status;
 use crate::storage::schema::users::expires_at;
 use crate::storage::{models, schema};
 
 pub enum Job {
     Refresh,
     Killmails,
+    ResolveKillmails,
     Killmail(i64, String),
     Character(i64),
     Corporation(i64),
     Alliance(i64),
     SaveCharacter(models::User),
     SaveKillmail(models::Killmail),
+    SaveEntity(models::Entity),
     Stop,
 }
 
@@ -43,7 +46,7 @@ impl Processor {
                     Job::Refresh => {
                         let mut conn = pool.get().unwrap();
                         let users = match schema::users::dsl::users
-                            .filter(expires_at.gt(now.into_sql::<Timestamptz>() - 20.minutes()))
+                            .filter(expires_at.lt(now.into_sql::<Timestamptz>() - 20.minutes()))
                             .load::<models::User>(&mut conn)
                         {
                             Ok(users) => users,
@@ -57,7 +60,9 @@ impl Processor {
                     }
                     Job::Killmails => {
                         let mut conn = pool.get().unwrap();
-                        let users = match schema::users::dsl::users.load::<models::User>(&mut conn)
+                        let users = match schema::users::dsl::users
+                            .filter(expires_at.gt(now.into_sql::<Timestamptz>()))
+                            .load::<models::User>(&mut conn)
                         {
                             Ok(users) => users,
                             Err(e) => {
@@ -67,6 +72,23 @@ impl Processor {
                         };
 
                         client.get_killmails(users).await;
+                    }
+                    Job::ResolveKillmails => {
+                        tracing::info!("resolving killmails");
+                        let mut conn = pool.get().unwrap();
+                        let killmails = match schema::killmails::dsl::killmails
+                            .filter(status.eq("new"))
+                            .or_filter(status.eq("error"))
+                            .load::<models::Killmail>(&mut conn)
+                        {
+                            Ok(killmails) => killmails,
+                            Err(e) => {
+                                tracing::error!(error = e.to_string(), "Failed to refresh users");
+                                continue;
+                            }
+                        };
+
+                        client.resolve_killmails(killmails).await;
                     }
                     Job::Killmail(killmail_id, killmail_hash) => {
                         tracing::info!(killmail_id, killmail_hash, "processing killmail");
@@ -100,6 +122,13 @@ impl Processor {
                         if let Err(e) = save_killmail(&pool, killmail) {
                             tracing::error!(error = e.to_string(), "Failed to save killmail");
                         }
+                    }
+                    Job::SaveEntity(entity) => {
+                        tracing::debug!(id = entity.id, "saving entity");
+                        // Save or update the entity in the database
+                        if let Err(e) = crate::storage::handlers::save_entity(&pool, entity) {
+                            tracing::error!(error = e.to_string(), "Failed to save entity");
+                        };
                     }
                     Job::Stop => {
                         tracing::info!("Stopping processor.");

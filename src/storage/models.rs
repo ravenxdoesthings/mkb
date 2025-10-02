@@ -12,6 +12,15 @@ pub struct Killmail {
 }
 
 #[derive(Clone, Debug, Queryable, Insertable, Selectable)]
+#[diesel(table_name = super::schema::entities)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+pub struct Entity {
+    pub id: i64,
+    pub name: String,
+    pub type_: String,
+}
+
+#[derive(Clone, Debug, Queryable, Insertable, Selectable)]
 #[diesel(table_name = super::schema::users)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct User {

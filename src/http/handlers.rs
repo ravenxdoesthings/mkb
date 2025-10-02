@@ -126,3 +126,24 @@ pub async fn killmails(State(state): State<AppState>) -> impl IntoResponse {
         "".to_string(),
     )
 }
+
+pub async fn resolve(State(state): State<AppState>) -> impl IntoResponse {
+    state
+        .jobs_sender
+        .try_send(esi::processor::Job::ResolveKillmails)
+        .map_err(|e| {
+            tracing::error!(error = e.to_string(), "Failed to enqueue refresh job");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("Content-Type", "text/html")],
+                e.to_string(),
+            )
+        })
+        .ok();
+
+    (
+        StatusCode::OK,
+        [("Content-Type", "application/json")],
+        "".to_string(),
+    )
+}

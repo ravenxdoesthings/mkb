@@ -43,3 +43,14 @@ pub fn set_killmail_status(
         .set(schema::killmails::status.eq(status))
         .execute(&mut conn)
 }
+
+pub fn save_entity(
+    pool: &Pool<ConnectionManager<PgConnection>>,
+    entity: models::Entity,
+) -> Result<usize, diesel::result::Error> {
+    let mut conn = pool.get().unwrap();
+    insert_into(schema::entities::table)
+        .values(&entity)
+        .on_conflict_do_nothing()
+        .execute(&mut conn)
+}

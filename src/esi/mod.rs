@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::config::Config;
 use crate::storage::models;
+use crate::{config::Config, storage::models::Killmail};
 use base64::Engine;
 use jsonwebtoken::{Algorithm, DecodingKey, TokenData, Validation, decode, jwk::Jwk};
 use reqwest::Response;
@@ -10,6 +10,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 pub mod processor;
+pub mod scheduler;
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct Claims {
@@ -342,41 +343,185 @@ impl EsiClient {
 
     pub async fn get_killmails(&self, users: Vec<models::User>) {
         tracing::debug!(len = users.len(), "fetching killmails for users");
+        let mut set = tokio::task::JoinSet::new();
         for user in users {
-            if let Err(e) = self.get_personal_killmails(&user).await {
+            let self_clone = self.clone();
+            set.spawn(async move {
+                if let Err(e) = self_clone.get_personal_killmails(&user).await {
+                    tracing::error!(
+                        error = e.to_string(),
+                        "Failed fetch killmails for character"
+                    );
+                }
+            });
+        }
+        set.join_all().await;
+    }
+
+    pub async fn resolve_killmails(&self, killmails: Vec<Killmail>) {
+        tracing::debug!(len = killmails.len(), "resolving killmails");
+        let mut set = tokio::task::JoinSet::new();
+        for km in killmails {
+            let self_clone = self.clone();
+            set.spawn(async move {
+                if let Err(e) = self_clone
+                    .get_killmail_data(km.killmail_id, km.killmail_hash)
+                    .await
+                {
+                    tracing::error!(
+                        killmail_id = km.killmail_id,
+                        error = e.to_string(),
+                        "Failed to resolve killmail"
+                    );
+                }
+            });
+        }
+        set.join_all().await;
+    }
+
+    pub async fn get_killmail_data(
+        &self,
+        killmail_id: i64,
+        killmail_hash: String,
+    ) -> Result<(), anyhow::Error> {
+        let url = format!("https://esi.evetech.net/killmails/{killmail_id}/{killmail_hash}");
+        let response = match reqwest::Client::new().get(url).send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::error!(error = e.to_string(), "failed to send request");
+                return Err(anyhow::format_err!("failed to send request: {e}"));
+            }
+        };
+
+        let status = response.status();
+        if !status.is_success() {
+            tracing::error!(status = status.as_u16(), "request failed");
+            return Err(anyhow::format_err!("request failed with status {}", status));
+        }
+
+        let result = match Self::json(response).await {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!(error = e.to_string(), "failed to decode JSON");
+                return Err(anyhow::format_err!("failed to decode JSON: {e}"));
+            }
+        };
+
+        let mut entities: Vec<models::Entity> = Vec::new();
+
+        let solar_system: models::Entity;
+        if let Some(system_id) = result.get("solar_system_id").and_then(|id| id.as_i64()) {
+            solar_system = models::Entity {
+                id: system_id,
+                name: "".to_string(),
+                type_: "solar_system".to_string(),
+            };
+        } else {
+            tracing::error!("killmail missing solar_system_id");
+            solar_system = models::Entity {
+                id: 0,
+                name: "".to_string(),
+                type_: "solar_system".to_string(),
+            };
+        }
+        entities.push(solar_system);
+        if let Some(victim) = result.get("victim") {
+            if let Some(char_id) = victim.get("character_id").and_then(|id| id.as_i64()) {
+                entities.push(models::Entity {
+                    id: char_id,
+                    name: "".to_string(),
+                    type_: "character".to_string(),
+                });
+            }
+            if let Some(corp_id) = victim.get("corporation_id").and_then(|id| id.as_i64()) {
+                entities.push(models::Entity {
+                    id: corp_id,
+                    name: "".to_string(),
+                    type_: "corporation".to_string(),
+                });
+            }
+            if let Some(alliance_id) = victim.get("alliance_id").and_then(|id| id.as_i64()) {
+                entities.push(models::Entity {
+                    id: alliance_id,
+                    name: "".to_string(),
+                    type_: "alliance".to_string(),
+                });
+            }
+            if let Some(weapon_type_id) = victim.get("weapon_type_id").and_then(|id| id.as_i64()) {
+                entities.push(models::Entity {
+                    id: weapon_type_id,
+                    name: "".to_string(),
+                    type_: "weapon_type".to_string(),
+                });
+            }
+            if let Some(ship_type_id) = victim.get("ship_type_id").and_then(|id| id.as_i64()) {
+                entities.push(models::Entity {
+                    id: ship_type_id,
+                    name: "".to_string(),
+                    type_: "ship_type".to_string(),
+                });
+            }
+        }
+
+        if let Some(attackers) = result.get("attackers").and_then(|a| a.as_array()) {
+            for attacker in attackers {
+                if let Some(char_id) = attacker.get("character_id").and_then(|id| id.as_i64()) {
+                    entities.push(models::Entity {
+                        id: char_id,
+                        name: "".to_string(),
+                        type_: "character".to_string(),
+                    });
+                }
+                if let Some(corp_id) = attacker.get("corporation_id").and_then(|id| id.as_i64()) {
+                    entities.push(models::Entity {
+                        id: corp_id,
+                        name: "".to_string(),
+                        type_: "corporation".to_string(),
+                    });
+                }
+                if let Some(alliance_id) = attacker.get("alliance_id").and_then(|id| id.as_i64()) {
+                    entities.push(models::Entity {
+                        id: alliance_id,
+                        name: "".to_string(),
+                        type_: "alliance".to_string(),
+                    });
+                }
+                if let Some(ship_type_id) = attacker.get("ship_type_id").and_then(|id| id.as_i64())
+                {
+                    entities.push(models::Entity {
+                        id: ship_type_id,
+                        name: "".to_string(),
+                        type_: "ship_type".to_string(),
+                    });
+                }
+            }
+        }
+
+        tracing::trace!(
+            killmail_id,
+            len = entities.len(),
+            "entities collected from killmail"
+        );
+        for entity in entities {
+            tracing::trace!(entity = format!("{entity:?}"), "debugging entity");
+            if entity.id == 0 {
+                continue;
+            }
+            if let Err(err) = self
+                .jobs_sender
+                .send(processor::Job::SaveEntity(entity))
+                .await
+            {
                 tracing::error!(
-                    error = e.to_string(),
-                    "Failed fetch killmails for character"
+                    killmail_id,
+                    error = err.to_string(),
+                    "failed to enqueue save job"
                 );
             }
         }
+
+        Ok(())
     }
-
-    //  pub async fn get_killmail_data(&self, killmail_id: i64, killmail_hash: String) {
-    //      let url = format!("https://esi.evetech.net/killmails/{killmail_id}/{killmail_hash}");
-    //      let response = match reqwest::Client::new().get(url).send().await {
-    //          Ok(resp) => resp,
-    //          Err(e) => {
-    //              tracing::error!(error = e.to_string(), "failed to send request");
-    //              return;
-    //          }
-    //      };
-
-    //      let status = response.status();
-    //      if !status.is_success() {
-    //          tracing::error!(status = status.as_u16(), "request failed");
-    //          return;
-    //      }
-
-    //      let result = match Self::json(response).await {
-    //      	Ok(json) => json,
-    // Err(e) => {
-    // 	tracing::error!(error = e.to_string(), "failed to decode JSON");
-    // 	return;
-    // }
-    //      };
-
-    //  }
 }
 
 #[cfg(test)]
